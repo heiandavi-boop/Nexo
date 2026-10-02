@@ -1,0 +1,13 @@
+# Reconocimiento de voz en la GPU de Apple Silicon (Whisper large-v3-turbo)
+mlx==0.29.3
+mlx-whisper==0.4.3
+# Silero VAD (modelo ONNX en modelos/silero_vad.onnx)
+onnxruntime>=1.17,<2
+numpy>=1.24,<2.1
+scipy>=1.11,<2
+huggingface_hub>=0.23
+# Voz neuronal local (voces en modelos/voces)
+piper-tts==1.8.0
+# Respaldo si solo existe modelos/whisper-base, y micrófono de la versión de terminal
+faster-whisper>=1.1,<2
+sounddevice>=0.5,<1

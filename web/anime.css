@@ -1,0 +1,28 @@
+/* Imagen original con movimiento y boca sincronizada, sin alterar el archivo. */
+.orb.reference-avatar{--mouth-open:0;width:290px;height:auto;aspect-ratio:838/1086;margin:18px auto 22px;background:#fff;border-radius:28px;box-shadow:0 12px 35px #39577112!important;animation:none;overflow:hidden;isolation:isolate;border:1px solid #dae4e7}
+.portrait-art{position:absolute;inset:0;transform-origin:50% 85%;animation:portrait-breathe 6s ease-in-out infinite}
+.portrait-original,.portrait-mouth{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;user-select:none;pointer-events:none}
+.mouth-cover{position:absolute;left:43.65%;top:40.85%;width:2.8%;height:1.95%;border-radius:50%;background:#fac6cb}
+.portrait-mouth{clip-path:ellipse(1.2% .85% at 44.9% 41.8%);transform-origin:44.9% 41.8%;transform:scaleY(calc(.22 + var(--mouth-open)*1.5));will-change:transform}
+.reference-avatar[data-state=listening] .portrait-art{animation:portrait-listen 6s ease-in-out infinite}
+.reference-avatar[data-state=thinking] .portrait-art,.reference-avatar[data-state=transcribing] .portrait-art{animation:portrait-think 4s ease-in-out infinite}
+.timings{font-size:11px;color:#889184;min-height:14px;margin:-14px 0 14px}
+.bubble mark{background:#f6e3b4;color:inherit;border-radius:3px;padding:0 2px}
+.bubble-note{display:block;margin-top:6px;font-size:11px;opacity:.7}
+details label{display:block;margin-top:10px}
+.mic-picker{display:block;font-size:12px;color:#788378;margin-top:12px}
+.voice-test{margin-top:8px;font-size:11px;color:#304d41;background:none;border:1px solid #dce2d6;border-radius:20px;padding:5px 12px;cursor:pointer}
+.voice-test:disabled{opacity:.5;cursor:default}
+.activate{display:block;margin:12px auto 0;border:1px solid #304d41;border-radius:40px;background:#fff;color:#304d41;padding:11px 22px;font-size:13px;cursor:pointer}
+.activate[hidden]{display:none}
+.access{font-size:11px;color:#788378;margin:10px 0 0}
+.access[data-mic=on]::before{content:'● ';color:#c0392b}
+.autostart{display:block;font-size:12px;color:#788378;margin-top:8px}
+.mic-picker select{margin-left:8px;max-width:240px;font:inherit;padding:4px 6px;border-radius:8px;border:1px solid #dce2d6;background:#fff}
+details input[type=range]{width:100%}
+.reference-avatar[data-state=speaking]{border-color:#a6c7dc}
+@keyframes portrait-breathe{50%{transform:translateY(-2px) scale(1.008)}}
+@keyframes portrait-listen{50%{transform:rotate(-1deg) scale(1.015)}}
+@keyframes portrait-think{50%{transform:rotate(1.5deg) scale(1.015)}}
+@media(max-width:850px){.orb.reference-avatar{width:260px}}
+@media(prefers-reduced-motion:reduce){.portrait-art{animation:none!important}}

@@ -1,0 +1,32 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Abrir asistente web local",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["servidor.py"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": [],
+      "presentation": {"reveal": "always", "focus": true, "panel": "dedicated"}
+    },
+    {
+      "label": "Conversar por micrófono",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["main.py", "--microfono"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": [],
+      "presentation": {"reveal": "always", "focus": true, "panel": "dedicated"}
+    },
+    {
+      "label": "Iniciar asistente local",
+      "type": "process",
+      "command": "python3",
+      "args": ["main.py"],
+      "options": {"cwd": "${workspaceFolder}"},
+      "problemMatcher": [],
+      "presentation": {"reveal": "always", "focus": true, "panel": "dedicated"}
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Nexo · Tu asistente local</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/anime.css"></head>
+<body>
+<header><a class="brand" href="/">nexo<span>●</span></a><div class="local"><span>●</span> EN TU MAC · SIN NUBE</div></header>
+<main>
+<section class="companion">
+<div class="eyebrow">UN ESPACIO PARA CONVERSAR</div>
+<h1>Aquí, para escucharte.</h1>
+<p class="intro">Habla a tu ritmo. Respondo cuando termines la frase;<br>si haces una pausa a mitad de una idea, te espero.</p>
+<div class="orb reference-avatar" id="orb" data-state="paused" aria-hidden="true">
+  <div class="portrait-art">
+    <img class="portrait-original" src="/assets/avatar.png" alt="" draggable="false">
+    <span class="mouth-cover"></span>
+    <img class="portrait-mouth" src="/assets/avatar.png" alt="" draggable="false">
+  </div>
+</div>
+<div class="status" id="status" role="status">Listo cuando tú quieras</div>
+<p id="detail">Preparando la conversación…</p>
+<div class="meter"><div id="level"></div></div>
+<p class="timings" id="timings" aria-live="off"></p>
+<button class="primary" id="start">Iniciar conversación <span>↗</span></button>
+<button type="button" class="activate" id="activate" hidden>Activar micrófono y audio</button>
+<p class="access" id="access" data-mic="off" aria-live="polite"></p>
+<label class="autostart"><input type="checkbox" id="autoStart" checked> Activar conversación al abrir</label>
+<p class="note">Autoriza el micrófono una vez para http://localhost:8765. Después, manos libres. <span id="engine"></span></p>
+<label class="mic-picker" for="mic">Micrófono <select id="mic"><option value="">Predeterminado de macOS</option></select></label>
+<p class="note" id="micName"></p>
+<label class="mic-picker" for="voiceSelect">Voz de Nexo <select id="voiceSelect"><option value="">Cargando…</option></select></label>
+<button type="button" class="voice-test" id="voiceTest">Escuchar muestra</button>
+<details><summary>Ajustar detección de voz</summary>
+<label for="sensitivity">Exigencia para detectar voz <output id="sensitivityValue">0.50</output></label><input id="sensitivity" type="range" min="0.3" max="0.85" step="0.05" value="0.5">
+<label for="shortPause">Pausa al terminar una frase (s) <output id="shortPauseValue">0.7</output></label><input id="shortPause" type="range" min="0.4" max="1.5" step="0.1" value="0.7">
+<label for="longPause">Pausa dentro de una frase (s) <output id="longPauseValue">1.6</output></label><input id="longPause" type="range" min="0.8" max="3" step="0.1" value="1.6">
+<p>Si ruidos o la TV abren turnos, sube la exigencia. Si te interrumpo, sube las pausas. Se aplican al siguiente turno.</p></details>
+</section>
+<section class="conversation" aria-label="Conversación y memoria">
+<div class="panel-head"><div><div class="eyebrow">NUESTRA CONVERSACIÓN</div><h2>Lo que vamos recordando</h2></div><span class="memory-badge" id="count">0 recuerdos</span></div>
+<details class="profile"><summary>Datos que recuerdo de ti</summary><p id="profile">Aún no hay datos personales confirmados.</p><p>Para corregir un dato, escríbelo o dilo explícitamente: «Mi nombre es…» o «Mi profesión es…».</p></details>
+<div class="messages" id="messages" role="log" aria-live="polite"><div class="empty" id="empty"><span>✳</span><h3>Todo empieza con un hola.</h3><p>Tu conversación se guarda en este Mac para continuar donde la dejaste.</p></div></div>
+<form id="textForm"><label class="sr-only" for="text">Escribir un mensaje</label><input id="text" placeholder="También puedes escribir aquí…" maxlength="2000" autocomplete="off" required><button id="send" type="submit" aria-label="Enviar mensaje">↑</button></form>
+<div class="panel-foot"><span>Memoria local persistente</span><button id="clear">Borrar memoria</button></div>
+<p class="memory-note">Conserva datos personales explícitos, intercambios recientes y recuerdos relacionados. Puedes revisar los datos guardados arriba.</p>
+</section>
+</main><div id="error" role="alert" hidden></div><script type="module" src="/app.js"></script>
+</body></html>

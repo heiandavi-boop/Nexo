@@ -1,0 +1,6 @@
+{
+  "name": "nexo-local",
+  "private": true,
+  "type": "module",
+  "scripts": {"test": "node tests/vad.mjs"}
+}
