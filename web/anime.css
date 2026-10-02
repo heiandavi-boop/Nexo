@@ -13,6 +13,9 @@ details label{display:block;margin-top:10px}
 .mic-picker{display:block;font-size:12px;color:#788378;margin-top:12px}
 .voice-test{margin-top:8px;font-size:11px;color:#304d41;background:none;border:1px solid #dce2d6;border-radius:20px;padding:5px 12px;cursor:pointer}
 .voice-test:disabled{opacity:.5;cursor:default}
+.voice-compare{max-width:320px;margin:10px auto 0}
+.voice-compare textarea{width:100%;font:inherit;font-size:12px;padding:8px;border-radius:8px;border:1px solid #dce2d6;resize:vertical;margin-top:6px}
+.voice-info{font-size:11px;color:#788378;max-width:340px;margin:8px auto 0;min-height:14px;line-height:1.5}
 .activate{display:block;margin:12px auto 0;border:1px solid #304d41;border-radius:40px;background:#fff;color:#304d41;padding:11px 22px;font-size:13px;cursor:pointer}
 .activate[hidden]{display:none}
 .access{font-size:11px;color:#788378;margin:10px 0 0}

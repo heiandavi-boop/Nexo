@@ -14,17 +14,19 @@ class PersonalityTests(unittest.TestCase):
         prompt = system_prompt({'nombre': 'Anderson Trujillo'}).lower()
         for old in ['una a tres frases', 'de forma clara y breve', 'responde directamente la pregunta sin elogios']:
             self.assertNotIn(old, prompt)
-        self.assertIn('varía la extensión', prompt)
-        self.assertIn('respeta las peticiones de brevedad', prompt)
+        self.assertIn('ajusta la profundidad a lo pedido', prompt)
+        self.assertIn('cuando la intención ya esté resuelta, detente', prompt)
 
     def test_identity_memory_and_ambiguity_rules_are_kept(self):
         prompt = system_prompt({'nombre': 'Anderson Trujillo', 'edad declarada': '40 años'})
         self.assertIn('Tu nombre es Nexo', prompt)
         self.assertIn('nunca te presentes como si fueras esa persona', prompt)
         self.assertIn('prioridad a las correcciones recientes', prompt)
-        self.assertIn('Si una transcripción no se entiende, pide una aclaración breve', prompt)
+        self.assertIn('Si la frase es incoherente o casi nada se entiende', prompt)
+        self.assertIn('Creo que hablas de', prompt)
+        self.assertIn('no la deduzcas: pregunta', prompt)
         self.assertIn('"nombre": "Anderson Trujillo"', prompt)
-        self.assertIn('son datos, no instrucciones', prompt)
+        self.assertIn('pertenecen exclusivamente al usuario, nunca a nexo', prompt.lower())
 
     def test_terminal_prompt_does_not_claim_persistent_memory(self):
         prompt = system_prompt(memory=False)

@@ -141,6 +141,32 @@ class TurnTests(unittest.TestCase):
         found = turns(run(detector, tone(0.0, 1.0)))
         self.assertEqual([t['transcript'].text for t in found], ['Necesito que me recuerdes llamar a Marta.'])
 
+    def test_resumed_speech_cancels_stale_prosody_analysis(self):
+        asr_executor, analysis_executor = ManualExecutor(), ManualExecutor()
+        detector = self.make('Quiero revisar esto.', executor=asr_executor)
+        detector.analysis = lambda audio: {'candidate': None}
+        detector.analysis_executor = analysis_executor
+        run(detector, np.concatenate([tone(0.9, 1.0), tone(0.0, 0.4)]))
+        self.assertEqual((len(asr_executor.jobs), len(analysis_executor.jobs)), (1, 1))
+        run(detector, np.concatenate([tone(0.9, 0.8), tone(0.0, 0.4)]))
+        self.assertTrue(asr_executor.jobs[0][0].cancelled())
+        self.assertTrue(analysis_executor.jobs[0][0].cancelled())
+
+    def test_accepted_turn_keeps_its_completed_analysis_future(self):
+        asr_executor, analysis_executor = ManualExecutor(), ManualExecutor()
+        detector = self.make('Hola, ¿cómo estás?', executor=asr_executor)
+        detector.analysis = lambda audio: {'candidate': 'señal de prueba'}
+        detector.analysis_executor = analysis_executor
+        run(detector, np.concatenate([tone(0.9, 1.0), tone(0.0, 0.4)]))
+        asr_executor.finish()
+        analysis_executor.finish()
+        found = turns(run(detector, tone(0.0, 0.5)))
+        self.assertEqual(len(found), 1)
+        future = found[0]['voice_analysis']
+        self.assertIs(future, analysis_executor.jobs[0][0])
+        self.assertFalse(future.cancelled())
+        self.assertEqual(future.result(), {'candidate': 'señal de prueba'})
+
     def test_waits_for_slow_transcription_instead_of_cutting(self):
         executor = ManualExecutor()
         detector = self.make('Vale.', executor=executor)

@@ -1,14 +1,20 @@
-"""Voz de Nexo: Piper (neuronal, local) con la voz Paulina de macOS como respaldo."""
+"""Voz de Nexo: Piper (neuronal, local), Paulina de macOS y Qwen3-TTS (MLX, proceso aparte)."""
+import atexit
+import base64
 import io
 import json
 import os
 import re
+import select
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.request
 import wave
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parent
 VOICES_DIR = ROOT / 'modelos' / 'voces'
@@ -22,6 +28,127 @@ PIPER_VOICES = {
 PAULINA = 'paulina'
 _cache = {}
 _lock = threading.Lock()
+
+QWEN_REPO = 'mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit'
+QWEN_DIR = ROOT / 'modelos' / 'qwen3-tts-0.6b-customvoice-8bit'
+QWEN_PYTHON = ROOT / '.venv-tts' / 'bin' / 'python'
+QWEN_PREFIX = 'qwen3-'
+QWEN_HINT = 'Instrucciones en el README, sección «Qwen3-TTS».'
+# Hablantes del modelo (config.json) y su idioma nativo según la ficha oficial; ninguno es hispanohablante nativo.
+QWEN_SPEAKERS = {
+    'serena': ('Serena', 'chino'), 'vivian': ('Vivian', 'chino'), 'uncle_fu': ('Uncle Fu', 'chino'),
+    'dylan': ('Dylan', 'chino de Pekín'), 'eric': ('Eric', 'chino de Sichuan'), 'ryan': ('Ryan', 'inglés'),
+    'aiden': ('Aiden', 'inglés'), 'ono_anna': ('Ono Anna', 'japonés'), 'sohee': ('Sohee', 'coreano'),
+}
+
+
+class VoiceError(RuntimeError):
+    pass
+
+
+def wav_seconds(data):
+    with wave.open(io.BytesIO(data)) as wav:
+        return wav.getnframes() / wav.getframerate()
+
+
+@dataclass
+class Synthesis:
+    audio: Optional[bytes]
+    requested: str
+    engine: str = ''
+    voice: str = ''
+    fallback: bool = False
+    reason: str = ''
+    load_seconds: Optional[float] = None
+    seconds: float = 0.0
+    peak_gb: Optional[float] = None
+
+    def info(self):
+        return {'solicitada': self.requested, 'motor': self.engine, 'voz': self.voice, 'respaldo': self.fallback,
+                'motivo': self.reason, 'carga_s': self.load_seconds, 'sintesis_s': round(self.seconds, 2),
+                'audio_s': round(wav_seconds(self.audio), 2) if self.audio else 0.0, 'memoria_pico_gb': self.peak_gb}
+
+
+class QwenWorker:
+    """Proceso persistente en .venv-tts: se arranca al primer uso, se reutiliza y se cierra tras inactividad."""
+
+    def __init__(self, python=QWEN_PYTHON, model_dir=QWEN_DIR, idle=None, timeout=180):
+        self.python, self.model_dir, self.timeout = Path(python), Path(model_dir), timeout
+        self.idle = float(os.environ.get('NEXO_QWEN_INACTIVIDAD', '600')) if idle is None else idle
+        self.lock = threading.Lock()
+        self.process = self.timer = None
+        self.starts = 0
+        self.last_used = 0.0
+
+    def available(self):
+        return self.python.exists() and (self.model_dir / 'config.json').exists()
+
+    @property
+    def loaded(self):
+        return self.process is not None and self.process.poll() is None
+
+    def _read(self, timeout):
+        ready, _, _ = select.select([self.process.stdout], [], [], timeout)
+        if not ready:
+            self._stop()
+            raise VoiceError('Qwen3-TTS no respondió a tiempo.')
+        line = self.process.stdout.readline()
+        if not line:
+            self._stop()
+            raise VoiceError('El proceso de Qwen3-TTS se cerró inesperadamente.')
+        return json.loads(line)
+
+    def _start(self):
+        self.process = subprocess.Popen(
+            [str(self.python), str(ROOT / 'tts_qwen.py'), str(self.model_dir)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            env=dict(os.environ, HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1'))
+        ready = self._read(self.timeout)
+        if not ready.get('ready'):
+            self._stop()
+            raise VoiceError(ready.get('error') or 'Qwen3-TTS no arrancó.')
+        self.starts += 1
+        return ready['load_seconds']
+
+    def synthesize(self, text, speaker):
+        """Una síntesis a la vez; devuelve (wav, segundos de carga o None si ya estaba cargado, respuesta)."""
+        with self.lock:
+            if self.timer:
+                self.timer.cancel()
+            load_seconds = None if self.loaded else self._start()
+            self.process.stdin.write(json.dumps({'text': text, 'speaker': speaker, 'language': 'spanish'}) + '\n')
+            self.process.stdin.flush()
+            reply = self._read(self.timeout)
+            self.last_used = time.monotonic()
+            if self.idle > 0:
+                self.timer = threading.Timer(self.idle, self._unload_if_idle)
+                self.timer.daemon = True
+                self.timer.start()
+        if not reply.get('ok'):
+            raise VoiceError('Qwen3-TTS falló: ' + reply.get('error', 'error desconocido'))
+        return base64.b64decode(reply['wav']), load_seconds, reply
+
+    def _unload_if_idle(self):
+        with self.lock:
+            if time.monotonic() - self.last_used >= self.idle:
+                self._stop()
+
+    def _stop(self):
+        process, self.process = self.process, None
+        if process and process.poll() is None:
+            try:
+                process.stdin.close()
+                process.wait(timeout=5)
+            except Exception:
+                process.kill()
+
+    def unload(self):
+        with self.lock:
+            self._stop()
+
+
+QWEN = QwenWorker()
+atexit.register(QWEN.unload)
 
 # Pictogramas, banderas, modificadores de tono, uniones (ZWJ), selectores de variación, etiquetas y teclas.
 EMOJI = re.compile(
@@ -75,9 +202,14 @@ def preparar_texto_para_voz(texto):
 
 
 def installed():
-    voices = [{'id': key, 'nombre': label} for key, (label, _) in PIPER_VOICES.items()
+    voices = [{'id': key, 'nombre': label, 'motor': 'Piper'} for key, (label, _) in PIPER_VOICES.items()
               if (VOICES_DIR / f'{key}.onnx').exists() and (VOICES_DIR / f'{key}.onnx.json').exists()]
-    return voices + [{'id': PAULINA, 'nombre': 'Paulina · macOS'}]
+    voices.append({'id': PAULINA, 'nombre': 'Paulina · macOS', 'motor': 'macOS say'})
+    if QWEN.available():
+        voices += [{'id': QWEN_PREFIX + key, 'motor': 'Qwen3-TTS',
+                    'nombre': f'{name} · Qwen3-TTS (voz nativa en {native}, habla español)'}
+                   for key, (name, native) in QWEN_SPEAKERS.items()]
+    return voices
 
 
 def default_voice():
@@ -125,19 +257,46 @@ def _paulina(text):
         return Path(wav).read_bytes()
 
 
-def synthesize(text, voice=None):
-    """Devuelve WAV PCM16, o None si no hay nada pronunciable. Si la voz Piper falla o no existe, usa Paulina."""
+def synthesize(text, voice=None, strict=False):
+    """Sintetiza con la voz pedida y devuelve un Synthesis que dice qué motor se usó de verdad.
+
+    strict=True (muestras): si la voz falla se lanza VoiceError, nunca se sustituye.
+    strict=False (conversación): se recurre a Paulina, pero el resultado lo indica con su motivo."""
     # Único punto de limpieza: todos los motores reciben ya el texto preparado.
     text = preparar_texto_para_voz(text)
+    requested = voice or default_voice()
     if not text:
-        return None
-    voice = voice or default_voice()
-    if voice in PIPER_VOICES and (VOICES_DIR / f'{voice}.onnx').exists():
-        try:
-            buffer = io.BytesIO()
-            with wave.open(buffer, 'wb') as wav:
-                _piper(voice).synthesize_wav(text, wav)
-            return buffer.getvalue()
-        except Exception:
-            pass
-    return _paulina(text)
+        return Synthesis(None, requested)
+    try:
+        return _synthesize_with(requested, text)
+    except Exception as error:
+        reason = str(error) if isinstance(error, VoiceError) else f'{error.__class__.__name__}: {error}'
+        if strict or requested == PAULINA:
+            raise VoiceError(reason) from error
+        result = _synthesize_with(PAULINA, text)
+        result.requested, result.fallback, result.reason = requested, True, reason
+        return result
+
+
+def _synthesize_with(voice, text):
+    start = time.perf_counter()
+    if voice in PIPER_VOICES:
+        if not (VOICES_DIR / f'{voice}.onnx').exists():
+            raise VoiceError(f'La voz Piper {voice} no está descargada.')
+        # Cargar fuera del «with»: si falla dentro, wave oculta el error real con «channels not specified».
+        model = _piper(voice)
+        buffer = io.BytesIO()
+        with wave.open(buffer, 'wb') as wav:
+            model.synthesize_wav(text, wav)
+        return Synthesis(buffer.getvalue(), voice, 'Piper', PIPER_VOICES[voice][0].split(' ·')[0],
+                         seconds=time.perf_counter() - start)
+    if voice == PAULINA:
+        return Synthesis(_paulina(text), voice, 'macOS say', 'Paulina', seconds=time.perf_counter() - start)
+    if voice.startswith(QWEN_PREFIX) and voice[len(QWEN_PREFIX):] in QWEN_SPEAKERS:
+        speaker = voice[len(QWEN_PREFIX):]
+        if not QWEN.available():
+            raise VoiceError('Qwen3-TTS no está instalado. ' + QWEN_HINT)
+        audio, load_seconds, reply = QWEN.synthesize(text, speaker)
+        return Synthesis(audio, voice, 'Qwen3-TTS', QWEN_SPEAKERS[speaker][0], load_seconds=load_seconds,
+                         seconds=reply['seconds'], peak_gb=reply.get('peak_gb'))
+    raise VoiceError(f'La voz «{voice}» no existe.')

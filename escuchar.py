@@ -64,9 +64,16 @@ class Microfono:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--descargar', action='store_true', help='Descarga Whisper large-v3-turbo (MLX) y Silero VAD')
+    parser.add_argument('--descargar-qwen', action='store_true', help='Descarga Qwen3-TTS 0.6B CustomVoice 8-bit (~1,9 GB)')
     parser.add_argument('--archivo', help='Transcribir un WAV existente para verificar el modelo')
     args = parser.parse_args()
-    if args.descargar:
+    if args.descargar_qwen:
+        from huggingface_hub import snapshot_download
+        from voz import QWEN_DIR, QWEN_REPO
+        print(f'Descargando {QWEN_REPO}…', flush=True)
+        snapshot_download(QWEN_REPO, local_dir=str(QWEN_DIR))
+        print(f'Qwen3-TTS listo en {QWEN_DIR}. La síntesis posterior funciona sin internet.')
+    elif args.descargar:
         descargar()
     elif args.archivo:
         result = Transcriber().transcribe(load_wav(args.archivo))

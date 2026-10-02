@@ -8,6 +8,7 @@ import subprocess
 import urllib.error
 import urllib.request
 
+from conversacion import local_context
 from personalidad import MAX_TOKENS, TEMPERATURE, system_prompt
 
 
@@ -32,10 +33,29 @@ def request_json(path, payload=None, timeout=120):
         return json.load(response)
 
 
+def stream_json(path, payload, timeout=120):
+    """Respuesta en streaming (SSE) de LM Studio: produce cada objeto JSON a medida que llega."""
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("LM_STUDIO_API_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(BASE_URL + path, data=json.dumps(payload).encode("utf-8"), headers=headers)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=timeout) as response:
+        for raw in response:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                return
+            yield json.loads(data)
+
+
 def answer(model, history, question):
     result = request_json("/chat/completions", {
         "model": model,
-        "messages": [{"role": "system", "content": SYSTEM}]
+        "messages": [{"role": "system", "content": system_prompt(memory=False, local=local_context())}]
         + history[-8:] + [{"role": "user", "content": question}],
         "temperature": TEMPERATURE,
         "max_tokens": MAX_TOKENS,

@@ -1,0 +1,3 @@
+# Entorno separado para Qwen3-TTS (.venv-tts, Python 3.10 o superior).
+# Separado de .venv porque mlx-audio exige Python >= 3.10 y mlx >= 0.31, y Whisper (.venv) usa Python 3.9 y mlx 0.29.
+mlx-audio==0.5.7

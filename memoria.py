@@ -4,6 +4,8 @@ import sqlite3
 import json
 from pathlib import Path
 
+from conversacion import REJECTED_TOPICS, analyze, mentions, reintroduced
+
 DEFAULT_PATH = Path(__file__).resolve().parent / 'datos' / 'memoria.sqlite3'
 
 
@@ -16,6 +18,8 @@ class Memoria:
             db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(question, answer, tokenize='unicode61 remove_diacritics 2')")
             db.execute('CREATE TABLE IF NOT EXISTS profile (key TEXT PRIMARY KEY, value TEXT NOT NULL, source TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+            # Preferencias sobre cómo conversar; separadas del perfil factual.
+            db.execute('CREATE TABLE IF NOT EXISTS conversation_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL, source TEXT NOT NULL, updated TEXT DEFAULT CURRENT_TIMESTAMP)')
             if not db.execute("SELECT 1 FROM metadata WHERE key='profile_v1'").fetchone():
                 for (question,) in db.execute('SELECT question FROM turns ORDER BY id').fetchall():
                     self._update_profile(db, question)
@@ -78,6 +82,41 @@ class Memoria:
         name = self.profile().get('nombre')
         return [name] if name else []
 
+    @staticmethod
+    def _apply_preferences(current, question, doubtful=()):
+        """Preferencias tras aplicar el mensaje: instrucciones explícitas y temas que el usuario reabre."""
+        found = analyze(question, doubtful)
+        updated = dict(current)
+        updated.update(found['preferences'])
+        rejected = [t for t in current.get(REJECTED_TOPICS, [])
+                    if t not in reintroduced(question, current.get(REJECTED_TOPICS, []), found['abandon'])]
+        rejected += [t for t in found['reject'] if t not in rejected]
+        updated[REJECTED_TOPICS] = rejected
+        if not rejected:
+            updated.pop(REJECTED_TOPICS)
+        return updated
+
+    def preferences(self, question='', doubtful=()):
+        with self.connect() as db:
+            stored = {k: json.loads(v) for k, v in db.execute('SELECT key,value FROM conversation_preferences')}
+        return self._apply_preferences(stored, question, doubtful) if question else stored
+
+    @classmethod
+    def _update_preferences(cls, db, question, doubtful=()):
+        stored = {k: json.loads(v) for k, v in db.execute('SELECT key,value FROM conversation_preferences')}
+        updated = cls._apply_preferences(stored, question, doubtful)
+        for key in set(stored) - set(updated):
+            db.execute('DELETE FROM conversation_preferences WHERE key=?', (key,))
+        for key, value in updated.items():
+            if stored.get(key) != value:
+                db.execute('INSERT INTO conversation_preferences(key,value,source) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET '
+                           'value=excluded.value, source=excluded.source, updated=CURRENT_TIMESTAMP',
+                           (key, json.dumps(value, ensure_ascii=False), question))
+
+    def last_id(self):
+        with self.connect() as db:
+            return db.execute('SELECT COALESCE(MAX(id), 0) FROM turns').fetchone()[0]
+
     def connect(self):
         return sqlite3.connect(str(self.path))
 
@@ -86,6 +125,7 @@ class Memoria:
             cursor = db.execute('INSERT INTO turns(question,answer) VALUES (?,?)', (question, answer))
             db.execute('INSERT INTO search(rowid,question,answer) VALUES (?,?,?)', (cursor.lastrowid, question, answer))
             self._update_profile(db, question, doubtful)
+            self._update_preferences(db, question, doubtful)
 
     def history(self):
         with self.connect() as db:
@@ -93,41 +133,55 @@ class Memoria:
             count = db.execute('SELECT COUNT(*) FROM turns').fetchone()[0]
         return {'turns': [dict(zip(('id','question','answer','created'), row)) for row in reversed(rows)], 'count': count, 'profile': self.profile()}
 
-    def _select(self, question, budget):
+    def _select(self, question, budget, since_id=0, exclude=(), notes_budget=1500):
         stop = {'que','como','para','una','por','con','del','las','los','esto','eso','eres','tienes','puedes','recuerdas','dime'}
         words = [w for w in re.findall(r'\w+', question.lower()) if len(w) > 2 and w not in stop][:16]
         aliases = {'edad': ['años', 'tengo'], 'profesión': ['soy', 'ingeniero', 'trabajo'], 'profesion': ['soy', 'ingeniero', 'trabajo'], 'llamo': ['nombre', 'llamo']}
         for word in list(words):
             words.extend(aliases.get(word, []))
         with self.connect() as db:
-            recent = db.execute('SELECT id,question,answer FROM turns ORDER BY id DESC LIMIT 4').fetchall()
+            if since_id:
+                # Ventana anclada: crece turno a turno, así el inicio del diálogo no cambia entre peticiones.
+                recent = db.execute('SELECT id,question,answer FROM turns WHERE id >= ? ORDER BY id DESC LIMIT 8', (since_id,)).fetchall()
+            else:
+                recent = db.execute('SELECT id,question,answer FROM turns ORDER BY id DESC LIMIT 4').fetchall()
             older = []
             if words:
                 query = ' OR '.join('"' + word + '"' for word in words)
                 older = db.execute('SELECT rowid, question, answer FROM search WHERE search MATCH ? ORDER BY rank LIMIT 4', ('question : (' + query + ')',)).fetchall()
-        selected = {row[0]: row for row in recent}
-        for row in older:
-            selected.setdefault(row[0], row)
-        # El presupuesto (en caracteres) lo calcula quien conoce el contexto disponible del modelo.
         recent_ids = {row[0] for row in recent}
         kept = []
-        for row in sorted(selected.values(), key=lambda r: (r[0] in recent_ids, r[0]), reverse=True):
-            q, a = row[1][:1600], row[2][:1200]
+        # El presupuesto (en caracteres) lo calcula quien conoce el contexto disponible del modelo.
+        for row in recent:
+            # Respuestas antiguas recortadas: bastan para el hilo y alargan menos la espera.
+            q, a = row[1][:1600], row[2][:700]
+            if len(q) + len(a) > budget:
+                break
+            kept.append((row[0], q, a, True))
+            budget -= len(q) + len(a)
+        budget = min(budget, notes_budget)
+        for row in older:
+            # Un recuerdo de un tema abandonado no vuelve como referencia, salvo que el usuario lo reabra.
+            if row[0] in recent_ids or any(mentions(row[1] + ' ' + row[2], topic) for topic in exclude):
+                continue
+            q, a = row[1][:1600], row[2][:700]
             if len(q) + len(a) <= budget:
-                kept.append((row[0], q, a, row[0] in recent_ids))
+                kept.append((row[0], q, a, False))
                 budget -= len(q) + len(a)
         return sorted(kept)
 
     def context(self, question, budget=5000):
-        return [message for _, q, a, _ in self._select(question, budget) for message in (
+        return [message for _, q, a, _ in self._select(question, budget, notes_budget=budget) for message in (
             {'role': 'user', 'content': q}, {'role': 'assistant', 'content': a})]
 
-    def context_parts(self, question, budget=5000):
+    def context_parts(self, question, budget=5000, since_id=0, exclude=()):
         """Recuerdos antiguos como notas de referencia y solo lo reciente como diálogo.
 
         Las respuestas antiguas pueden tener errores ya corregidos o un estilo distinto;
-        como notas, el modelo las consulta sin tomarlas como ejemplo de cómo responder."""
-        kept = self._select(question, budget)
+        como notas, el modelo las consulta sin tomarlas como ejemplo de cómo responder.
+        since_id: el diálogo reciente empieza en ese turno (tras un cambio de tema).
+        exclude: temas abandonados que no deben volver como recuerdos relacionados."""
+        kept = self._select(question, budget, since_id, exclude)
         notes = '\n'.join(f'- [{turn_id}] Usuario: {q}\n  Nexo respondió: {a}' for turn_id, q, a, recent in kept if not recent)
         messages = [message for _, q, a, recent in kept if recent for message in (
             {'role': 'user', 'content': q}, {'role': 'assistant', 'content': a})]
@@ -139,4 +193,5 @@ class Memoria:
             db.execute('DELETE FROM turns')
             db.execute('DELETE FROM search')
             db.execute('DELETE FROM profile')
+            db.execute('DELETE FROM conversation_preferences')
             db.execute("INSERT INTO search(search) VALUES('optimize')")

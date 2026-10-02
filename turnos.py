@@ -129,8 +129,9 @@ class InlineExecutor:
 
 
 class TurnDetector:
-    def __init__(self, vad, transcribe, config=None, executor=None):
+    def __init__(self, vad, transcribe, config=None, executor=None, analysis=None, analysis_executor=None):
         self.vad, self.transcribe = vad, transcribe
+        self.analysis, self.analysis_executor = analysis, analysis_executor
         self.config = config or TurnConfig()
         self.executor = executor or InlineExecutor()
         self.dt = FRAME / RATE
@@ -145,14 +146,21 @@ class TurnDetector:
         self.prob = 0.0
         self._clear()
 
-    def _clear(self):
+    def _clear(self, cancel_analysis=True):
         if getattr(self, 'job', None):
             self.job['future'].cancel()
+            analysis_future = self.job.get('analysis_future')
+            if cancel_analysis and analysis_future:
+                analysis_future.cancel()
         self.pre = deque(maxlen=self.frames(self.config.prebuffer))
         self.audio = []
         self.active = self.speaking = self.forced = False
         self.onset = self.resume = self.speech_frames = self.last_speech = self.silence = 0
         self.job = None
+
+    def cancel(self):
+        """Descarta el turno especulativo y cancela trabajos pendientes."""
+        self._clear()
 
     @property
     def state(self):
@@ -234,9 +242,18 @@ class TurnDetector:
         if (silence >= config.revisar_tras or self.forced) and (self.job is None or self.job['version'] != version):
             if self.job:
                 self.job['future'].cancel()
+                analysis_future = self.job.get('analysis_future')
+                if analysis_future:
+                    analysis_future.cancel()
             end = min(len(self.audio), version + self.frames(config.cola))
             clip = np.concatenate(self.audio[:end])
-            self.job = {'version': version, 'end': end, 'future': self.executor.submit(self._timed, clip)}
+            self.job = {'version': version, 'end': end, 'future': self.executor.submit(self._timed, clip),
+                        'analysis_future': None}
+            if self.analysis and self.analysis_executor:
+                try:
+                    self.job['analysis_future'] = self.analysis_executor.submit(self.analysis, clip)
+                except Exception:
+                    pass
         if not self.job or self.job['version'] != version or not self.job['future'].done():
             return None
         try:
@@ -251,6 +268,7 @@ class TurnDetector:
         incomplete = self.job['incomplete'] = looks_incomplete(transcript)
         if not self.forced and silence < (config.pausa_larga if incomplete else config.pausa_corta):
             return None
+        voice_analysis = self.job.get('analysis_future')
         turn = {
             'id': uuid.uuid4().hex,
             'transcript': transcript,
@@ -258,6 +276,7 @@ class TurnDetector:
             'audio': self.job['end'] * self.dt,
             'timings': {'voz': round(self.speech_frames * self.dt, 2), 'fin_de_turno': round(silence, 2),
                         'transcripcion': round(seconds, 2)},
+            'voice_analysis': voice_analysis,
         }
-        self._clear()
+        self._clear(cancel_analysis=False)
         return {'turn': turn}

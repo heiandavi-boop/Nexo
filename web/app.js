@@ -1,7 +1,7 @@
 import {ChunkSender} from './vad.js';
 const $=id=>document.getElementById(id);
 let context,stream,node,source,muted,playing,sender,workletContext,permissionStatus;
-let enabled=false,busy=false,generation=0,pendingStart=0,startSeq=0;
+let enabled=false,busy=false,generation=0,pendingStart=0,startSeq=0,talkAbort=null;
 let needsGesture=false,audioState='sin activar',micPermission='desconocido',autoTried=false;
 let faceFrame=0;
 const SETTINGS={umbral_inicio:'sensitivity',pausa_corta:'shortPause',pausa_larga:'longPause'};
@@ -63,7 +63,14 @@ function showAccess(){
 }
 function count(n){$('count').textContent=`${n} ${n===1?'recuerdo':'recuerdos'}`;}
 function profile(facts){$('profile').textContent=Object.entries(facts||{}).map(([k,v])=>`${k}: ${v}`).join('\n')||'Aún no hay datos personales confirmados.';}
-function timings(t={}){const names={fin_de_turno:'fin de turno',transcripcion:'transcripción',generacion:'generación',sintesis_voz:'voz'};$('timings').textContent=Object.entries(names).filter(([k])=>k in t).map(([k,n])=>`${n} ${t[k].toFixed(2)} s`).join(' · ');}
+function timings(t={}){
+  const names={fin_de_turno:'fin de turno',transcripcion:'transcripción',first_token:'primer token',first_sentence:'primera frase',
+    first_audio:'audio listo',audio_play_start:'empezó a sonar',generacion:'respuesta completa',sintesis_voz:'síntesis'};
+  const parts=Object.entries(names).filter(([k])=>k in t).map(([k,n])=>`${n} ${t[k].toFixed(2)} s`);
+  // Lo que de verdad esperó la persona: silencio hasta cerrar el turno + hasta que sonó la primera voz.
+  if('fin_de_turno' in t&&'audio_play_start' in t)parts.push(`total hasta oír ${(t.fin_de_turno+t.audio_play_start).toFixed(2)} s`);
+  $('timings').textContent=parts.join(' · ');
+}
 function bubble(role,text,doubtful=[],note=''){
   $('empty')?.remove();const el=document.createElement('div');el.className=`bubble ${role}`;const who=document.createElement('span');who.className='who';who.textContent=role==='user'?'Tú':'Nexo';el.append(who);
   const unsure=new Set(doubtful.map(w=>w.toLowerCase()));
@@ -92,7 +99,7 @@ async function api(url,body,timeout=0){
 }
 async function postChunk(body,token){
   const r=await fetch('/api/voice/chunk',{method:'POST',headers:{'Content-Type':'application/octet-stream','X-Local-App':'1','X-Voice-Token':token},body});
-  if(r.status===409)return null;
+  if(r.status===409)return {stale:true};
   const data=await r.json();if(!r.ok)throw Error(data.error||'Falló la escucha local.');return data;
 }
 function settings(){const out={};for(const [key,id] of Object.entries(SETTINGS))out[key]=Number($(id).value);return out;}
@@ -121,6 +128,13 @@ async function queryPermission(){
   showAccess();return micPermission;
 }
 function onVoice(e){
+  // La sesión del servidor caducó (servidor reiniciado u otra pestaña): se abre una nueva.
+  if(e.stale){
+    staleTimes=staleTimes.filter(t=>performance.now()-t<30000).concat(performance.now());
+    // Dos pestañas abiertas se quitarían la sesión sin fin: mejor pausar y avisar.
+    if(staleTimes.length>3){stop();error('Nexo parece abierto en otra pestaña o ventana. Usa solo una y pulsa Iniciar.');return;}
+    sender.close();recover();return;
+  }
   $('level').style.width=`${Math.min(100,e.level*900)}%`;
   if(e.error){stop();error('No pude transcribir tu voz: '+e.error);return;}
   if(e.turn){sender.close();handleTurn(e.turn);return;}
@@ -136,6 +150,14 @@ async function listen(){
   if(ticket!==generation||!enabled)return;
   sender.start(data.token);idle();refreshUI();
 }
+let recovering=false,quietUntil=0,staleTimes=[];
+function recover(){
+  if(recovering||!enabled||busy||pendingStart||needsGesture||!stream||performance.now()<quietUntil)return;
+  recovering=true;
+  listen().catch(e=>{stop();error(e.message);}).finally(()=>{recovering=false;});
+}
+// Red de seguridad: si la conversación está activa pero la escucha quedó cerrada, se reabre.
+setInterval(()=>{if(!sender?.open)recover();},2000);
 // Nunca espera indefinidamente: si el navegador exige un gesto, resume() puede quedar pendiente.
 async function resumeAudio(){
   if(!context||context.state==='closed'){
@@ -167,6 +189,8 @@ function releaseCapture(){
 function stop(){
   const wasActive=enabled||pendingStart;
   enabled=false;pendingStart=0;startSeq++;generation++;needsGesture=false;sender?.close();
+  // Cierra la respuesta en curso: el servidor deja de generar, vacía su cola de voz y no la guarda.
+  talkAbort?.abort();talkAbort=null;
   if(playing){playing.stop();playing=null;}
   releaseCapture();
   if(wasActive)fetch('/api/voice/stop',{method:'POST',headers:{'X-Local-App':'1'}}).catch(()=>{});
@@ -242,7 +266,7 @@ async function start({voiceReady=null}={}){
     if(!busy)idle();refreshUI();
   }
 }
-async function play(base64,ticket,onStart){
+async function play(base64,ticket,onStart,onPlaying){
   const bytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0)),levels=envelope(bytes);
   if(ticket!==generation)return;
   const url=URL.createObjectURL(new Blob([bytes],{type:'audio/wav'}));
@@ -250,6 +274,7 @@ async function play(base64,ticket,onStart){
     await new Promise((resolve,reject)=>{
       playing={stop:()=>{voice.pause();resolve();}};
       voice.onended=resolve;voice.onerror=()=>reject(Error('No pude reproducir la voz de Nexo.'));
+      voice.onplaying=()=>onPlaying?.();
       voice.src=url;voice.volume=1;voice.muted=false;
       const stalled=setTimeout(()=>{voice.pause();reject(Error('La voz no empezó a sonar. La respuesta está en pantalla.'));},4000);
       voice.play().then(()=>{clearTimeout(stalled);audioState='habilitada';onStart?.();animateVoice(levels);showAccess();},e=>{
@@ -259,22 +284,62 @@ async function play(base64,ticket,onStart){
         reject(failure);
       });
     });
-  }finally{playing=null;voice.onended=voice.onerror=null;restFace();URL.revokeObjectURL(url);refreshUI();}
+  }finally{playing=null;voice.onended=voice.onerror=voice.onplaying=null;restFace();URL.revokeObjectURL(url);refreshUI();}
 }
-async function respond(payload,text,doubtful=[]){
-  payload={...payload,voice:$('voiceSelect').value};
+async function* readEvents(response){
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+  while(true){
+    const {value,done}=await reader.read();if(done)break;
+    buffer+=decoder.decode(value,{stream:true});
+    let cut;while((cut=buffer.indexOf('\n'))>=0){const line=buffer.slice(0,cut).trim();buffer=buffer.slice(cut+1);if(line)yield JSON.parse(line);}
+  }
+  if(buffer.trim())yield JSON.parse(buffer);
+}
+async function respond(payload,text,doubtful=[],t0=performance.now(),turnTimings={}){
+  payload={...payload,voice:$('voiceSelect').value,stream:true};
   busy=true;const ticket=generation;error('');$('send').disabled=true;$('clear').disabled=true;
   const mine=bubble('user',text,doubtful,doubtful.length?'Las palabras resaltadas se reconocieron con poca seguridad.':'');
   state('thinking','Pensando…','Qwen prepara la respuesta en este Mac.');
+  // La voz llega frase a frase mientras Qwen sigue escribiendo; se reproduce en orden, sin solaparse.
+  let reply=null,spoken='',playback=Promise.resolve(),blocked=false,final=null;
+  const client={};
+  const since=()=>(performance.now()-t0)/1000;
+  const enqueue=event=>{playback=playback.then(async()=>{
+    if(ticket!==generation||blocked)return;
+    try{await play(event.audio,ticket,()=>state('speaking','Hablando','La escucha se reanuda al terminar mi respuesta.'),
+      ()=>{if(!('audio_play_start' in client)){client.audio_play_start=since();timings({...turnTimings,...final?.timings,...client});}});}
+    catch(e){blocked=!!e.blocked;error(e.message);}
+  });};
+  const abort=talkAbort=new AbortController();
   try{
-    const data=await api('/api/talk',JSON.stringify(payload));
-    if(data.empty){mine.remove();error('No detecté palabras claras. Puedes intentarlo otra vez.');return;}
-    bubble('assistant',data.answer,[],data.saved===false?'No guardé este intercambio: pedí que lo repitas.':'');count(data.count);profile(data.profile);timings(data.timings);
-    if(data.warning)error(data.warning);
-    if(data.audio&&ticket===generation)await play(data.audio,ticket,()=>state('speaking','Hablando','La escucha se reanuda al terminar mi respuesta.'));
-  }catch(e){if(e.data?.duplicate)mine.remove();else error(e.message||'Se perdió la conexión con el servidor local.');}
+    const r=await fetch('/api/talk',{method:'POST',headers:{'Content-Type':'application/json','X-Local-App':'1'},body:JSON.stringify(payload),signal:abort.signal});
+    if(!r.ok){let d={};try{d=await r.json();}catch{}const e=Error(d.error||`Error ${r.status} del servidor local.`);e.data=d;throw e;}
+    for await(const event of readEvents(r)){
+      if(event.type==='audio'){
+        if(!('audio_recibido' in client))client.audio_recibido=since();
+        reply??=bubble('assistant','');spoken+=(spoken?' ':'')+event.text;reply.childNodes[1].textContent=spoken;
+        $('messages').scrollTop=$('messages').scrollHeight;
+        if(event.voz?.motor)$('voiceInfo').textContent='Última respuesta — '+describeVoice(event.voz);
+        enqueue(event);
+      }else if(event.type==='done')final=event;
+      else if(event.type==='empty'){mine.remove();error('No detecté palabras claras. Puedes intentarlo otra vez.');return;}
+      else if(event.type==='error'){const e=Error(event.error);e.data=event;throw e;}
+    }
+    if(final){
+      const note=final.saved===false?'No guardé este intercambio: pedí que lo repitas.':'';
+      if(reply){reply.childNodes[1].textContent=final.answer;if(note)reply.append(Object.assign(document.createElement('small'),{className:'bubble-note',textContent:note}));}
+      else bubble('assistant',final.answer,[],note);
+      count(final.count);profile(final.profile);timings({...turnTimings,...final.timings,...client});
+      if(final.warning)error(final.warning);
+    }
+    await playback;
+    timings({...turnTimings,...final?.timings,...client});
+  }catch(e){if(e.name==='AbortError')return;if(e.data?.duplicate)mine.remove();else error(e.message||'Se perdió la conexión con el servidor local.');}
   finally{
+    await playback;
+    if(talkAbort===abort)talkAbort=null;
     busy=false;$('send').disabled=false;$('clear').disabled=false;
+    quietUntil=performance.now()+1500;
     if(enabled&&ticket===generation){
       // Margen para que el eco de la última sílaba del asistente se disipe.
       await sleep(350);
@@ -285,8 +350,9 @@ async function respond(payload,text,doubtful=[]){
 }
 function handleTurn(turn){
   if(busy)return;
+  const t0=performance.now();
   timings(turn.timings);
-  respond({turn:turn.id},turn.text,turn.doubtful||[]);
+  respond({turn:turn.id},turn.text,turn.doubtful||[],t0,turn.timings);
 }
 // Se llama siempre dentro de un clic: así el navegador acepta reanudar el audio.
 function userStart(){const voiceReady=primeVoice();resumeAudio();start({voiceReady});}
@@ -320,14 +386,38 @@ async function loadVoices(){
   const r=await fetch('/api/voices');if(!r.ok)return;const d=await r.json(),select=$('voiceSelect'),saved=localStorage.getItem('nexo.voz');
   select.replaceChildren(...d.voces.map(v=>new Option(v.nombre,v.id)));
   select.value=d.voces.some(v=>v.id===saved)?saved:d.predeterminada;
+  if(!$('sampleText').value)$('sampleText').value=localStorage.getItem('nexo.muestra')||d.muestra||'';
 }
+function describeVoice(v){
+  if(!v?.motor)return '';
+  const parts=[`Motor: ${v.motor} · Voz: ${v.voz}`];
+  if(v.carga_s!=null)parts.push(`carga del modelo ${v.carga_s.toFixed(2)} s (primera vez)`);
+  parts.push(`síntesis ${v.sintesis_s.toFixed(2)} s`,`audio ${v.audio_s.toFixed(2)} s`);
+  if(v.memoria_pico_gb!=null)parts.push(`memoria pico ${v.memoria_pico_gb} GB`);
+  if(v.respaldo)parts.push(`RESPALDO: pediste «${v.solicitada}» y falló (${v.motivo})`);
+  return parts.join(' · ');
+}
+let sampleTicket=0,sampleRunning=false;
 $('voiceSelect').onchange=()=>localStorage.setItem('nexo.voz',$('voiceSelect').value);
+$('sampleText').oninput=()=>localStorage.setItem('nexo.muestra',$('sampleText').value);
 $('voiceTest').onclick=async()=>{
+  // Mientras hay una muestra en curso, el mismo botón la detiene.
+  if(sampleRunning){sampleTicket++;playing?.stop();return;}
   if(busy)return;
-  const voiceReady=primeVoice();resumeAudio();busy=true;sender?.close();const ticket=generation;$('voiceTest').disabled=true;error('');
-  try{await voiceReady;const d=await api('/api/voice/sample',JSON.stringify({voice:$('voiceSelect').value}));await play(d.audio,ticket,()=>state('speaking','Hablando','Muestra de la voz elegida.'));}
-  catch(e){error(e.message);}
-  finally{busy=false;$('voiceTest').disabled=false;if(enabled&&ticket===generation&&!needsGesture)listen().catch(e=>{stop();error(e.message);});else idle();}
+  const voiceReady=primeVoice();resumeAudio();busy=true;sampleRunning=true;sender?.close();
+  const ticket=generation,mine=++sampleTicket,select=$('voiceSelect');
+  $('voiceTest').textContent='Detener muestra';error('');
+  $('voiceInfo').textContent=`Generando con ${select.selectedOptions[0]?.textContent||select.value}…`;
+  try{
+    await voiceReady;
+    const d=await api('/api/voice/sample',JSON.stringify({voice:select.value,text:$('sampleText').value}));
+    $('voiceInfo').textContent=describeVoice(d.voz);
+    if(mine===sampleTicket)await play(d.audio,ticket,()=>state('speaking','Hablando',`Muestra: ${d.voz.motor} · ${d.voz.voz}`));
+  }catch(e){$('voiceInfo').textContent='';error(e.message);}
+  finally{
+    busy=false;sampleRunning=false;$('voiceTest').textContent='Escuchar muestra';
+    if(enabled&&ticket===generation&&!needsGesture)listen().catch(e=>{stop();error(e.message);});else idle();
+  }
 };
 $('mic').onchange=()=>{localStorage.setItem('nexo.mic',$('mic').value);if(enabled||pendingStart){stop();userStart();}};
 navigator.mediaDevices?.addEventListener('devicechange',()=>refreshMics().then(()=>{if(!busy)$('detail').textContent='Detecté un cambio de micrófonos. Elige el que quieras en la lista.';}));
